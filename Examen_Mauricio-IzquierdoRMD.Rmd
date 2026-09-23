@@ -1,0 +1,252 @@
+---
+title: "Machine Learning for Biological Data"
+author: "Mauricio Izquierdo"
+date: "2025-02-26"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    smooth_scroll: true
+    theme: paper
+    df_print: paged
+    collaspsed: TRUE
+    highlight: kate
+---
+
+# Parte 1: Reducción de dimensiones con Aprendizaje no supervisado
+
+## Carga y procesamiento de los datos
+
+En primer lugar, cargamos el conjunto de datos facilitados para la realización del ejercicio "heart_failure_clinical_records_dataset.csv" y realizamos un analisis exploratorio de los mismos para comprenderlos y saber a que nos enfrentamos.
+
+```{r}
+# Establecer el directorio de trabajo
+setwd("C:/Users/Mauricio Izquierdo/Desktop/Master_Bioinformática/Primer cuatri/IA/Modelos")
+
+# Cargar librerías necesarias
+library(tidyverse)
+library(factoextra)
+library(ggplot2)
+
+# Cargar los datos
+data <- read.csv("heart_failure_clinical_records_dataset.csv")
+
+# Explorar los datos
+# Dimensiones y estructura
+dim(data)
+str(data)
+
+```
+
+```{r}
+# Ver primeras filas
+head(data)
+```
+
+```{r}
+# Resumen estadístico
+summary(data)
+```
+
+```{r}
+# Comprobar valores faltantes
+colSums(is.na(data)) 
+```
+
+De los resultados de dicho analisis exploratorio de los datos observamos como no hay ningun valor faltante que manejar en el data frame, asi como tambien observamos que la vaariable en estudio (segun lo expuesto en el documento Variables.docx) DEATH_EVENT se trata de un dato booleano con formato interger. Como posteriormente nos va a interesar predecir esta variable con el aprendizaje supervisado y reducir la dimensionalidad de los datos clasificandolos en funcion de la misma, convertimos la variable en factor para poder realizar estos procesos en los siguientes pasos del ejercicio.
+
+Cabe destacar la interpretación de la misma como un dato booleano, donde "1" significa que SI hay fallo cardiaco mientras que "0" lo niega.
+
+En lo relativo al analisis estadistico de los datos, al presentar el data frame tantas variables de tipo booleano, muchas de las estadisticas dadas no aportan una información que nos pueda resultar de utilidad, mas alla de si hay mas o menos valores afirmativos o negativos (fijandonos en el valor de la media).
+
+```{r}
+# Convertimos la variable Death_Event a factor para poder clasificar los 
+# datos en funcion a ella y poder trabajar con ello posteriormente
+data$DEATH_EVENT <- as.factor(data$DEATH_EVENT)
+
+# Verificamos la transformación
+str(data)
+```
+
+Observamos que la variable DEATH_EVENT se ha convertido a tipo facctor corectamente.
+
+Finalmente, para preparar el conjunto de datos para la realización dle PCA realizaremos una selección de aquellas variables de tipo numerico y las escalaremos para evitar que la interpretación de los datos se encuentre sesgada.
+
+```{r}
+# Extraer los datos numéricos del df de trabajo para el posterior PCA
+data_numeric <- data %>% select(is.numeric)
+
+# Verificamos la selección
+str(data_numeric)
+
+# Normalizamos los datos
+scaled_data <- scale(data_numeric)
+```
+
+Observamos como se han seleccionado todas las variables a excepción de la variable DEATH_EVENT que convertimos a factor.
+
+## Aprendizaje no supervisado - Aplicación del PCA
+
+Reducimos las dimensiones del conjunto de datos aplicando un PCA.
+
+```{r}
+# Extraer la variable de DEATH_EVENT para la visualización
+dethev_labels <- data$DEATH_EVENT
+
+# Aplicamos el PCA
+pca_result <- prcomp(scaled_data, center = TRUE, scale. = TRUE)
+```
+
+Separaremos la variable factor y la recogeremos en una variable nueva para facilitarnos el trabajo mas adelante. Tras ello graficamos la varianza explicada por cada componente resultante del PCA haciendo uso de la función fviz_eig, permitiendonos apoyarnos en dicha gráfica para buscar el 'códo' que nos determina el número óptimo de componentes principales con las que continuar el análisis.
+
+```{r}
+# Elegir número adecuado de componentes principales
+# Para ello nos apoyamos en la gráfica dada por fviz_eig buscando el 'codo'
+fviz_eig(pca_result)    
+
+        # Vemos un pequeño codo tras la 2ª componente, por lo que 
+        # consideramos 2 componentes principales como el numero óptimo de componentes de trabajo
+```
+
+Tras la segunda componente vemos una disminución mas o menos considerable en la varianza explicada por la tercera componente y tras esta, las variaciones son menores, por lo que consideramos 2 componentes prncipales como el número de trabajo óptimo durante el resto del análisis.
+
+### Visualización de los datos
+
+Pasamos directamente a visualizar el conjunto de menor dimensión seleccionado haciendo uso de un gráfico de dispersión con ggplot2 y agrupando por el valor positivo o negatiov de la variable Death_Event.
+
+```{r}
+# Extraer coordenadas de los individuos
+pca_def <- as.data.frame(pca_result$x)
+pca_def$Death_Event <- as.factor(dethev_labels)
+
+# Visualización en espacio reducido con ggplot2, coloreando por 'clase'
+# En este caso 'clase' = 'Death_Event'
+pca_plot <- ggplot(pca_def, aes(x = PC1, y = PC2, color = Death_Event)) +
+  geom_point(alpha = 0.6) +
+  labs(title = "PCA - Proyección en 2D segun la variable Death Event", x = "PC1", y = "PC2") +
+  theme_minimal()
+
+pca_plot
+        
+        # No se observa una agrupación o tendencia clara entre estos y los datos de trabajo
+```
+
+Al visulizar el gráfico obtenido, no se observa ninguna tendencia aparente entre los datos, ni ninguna agrupacion de los mismos. Por lo tanto podemos estimar que la ocurrencia de estos datos responde a una dependencia multifactorial y compleja que no se refleja correctamente, o bien que la distribución de los sucesos es aleatoria.
+
+# Parte 2: Predicción con aprendizaje supervisado
+
+Partiremos del conjunto de datos reducido del apartado annterior. a partir del mismo, preparamos el conjunto de datos para aplicar algoritmos de aprendizaje supervisado dividiendolo en el conjunto dde entrenamiento y prueba.
+
+```{r}
+# Cargar librerías necesarias para los modelos de aprendizaje supervisado
+library(caret)
+library(randomForest)
+library(class)
+
+# Seleccionar solo las dos primeras componentes principales y la variable Death_Event
+pca_def_reduced <- pca_def[, c("PC1", "PC2", "Death_Event")]
+
+# Dividir en conjunto de entrenamiento y prueba (70%-30%)
+set.seed(007)  # Para reproducibilidad
+train_index <- createDataPartition(pca_def_reduced$Death_Event, p = 0.7, list = FALSE)
+train_data <- pca_def_reduced[train_index, ]
+test_data <- pca_def_reduced[-train_index, ]
+```
+
+Tras ello, aplicaremos 3 algoritmos de aprendizaje supervisado para compararlos y poder elegir aquel que responde mejor al conjunto de datos. Usaremos la Regresión logística (util al ser una variable booleana), el Random forest y KNN.
+
+## Regresión logística
+
+```{r}
+log_model <- glm(Death_Event ~ ., data = train_data, family = binomial)
+
+# Predicción en conjunto de prueba
+log_preds <- predict(log_model, newdata = test_data, type = "response")
+log_preds_deathev <- ifelse(log_preds > 0.5, 1, 0)  # Convertir probabilidades en clases
+
+# Evaluación del modelo
+conf_matrix_log <- confusionMatrix(factor(log_preds_deathev), factor(test_data$Death_Event))
+print(conf_matrix_log)
+
+```
+
+## Random Forest
+
+```{r}
+rf_model <- randomForest(Death_Event ~ ., data = train_data, ntree = 100, importance = TRUE)
+
+# Predicción en conjunto de prueba
+rf_preds <- predict(rf_model, newdata = test_data)
+
+# Evaluación del modelo
+conf_matrix_rf <- confusionMatrix(factor(rf_preds), factor(test_data$Death_Event))
+print(conf_matrix_rf)
+
+```
+
+## K - Nearest Neighbors (KNN)
+
+```{r}
+# Ajustamos el número de vecinos (k). Probamos con  k = 2, 3, 4 y 5.
+# Tras esto, bservamos como el 'k' óptimo es k = 4.
+k_value <- 4
+
+# Entrenamos el modelo KNN (k = 2)
+knn_preds <- knn(train = train_data[, c("PC1", "PC2")], test = test_data[, c("PC1", "PC2")], cl = train_data$Death_Event, k = k_value)
+
+# Evaluación del modelo KNN
+conf_matrix_knn <- confusionMatrix(factor(knn_preds), factor(test_data$Death_Event))
+print(conf_matrix_knn)
+```
+
+### Evaluación del modelo
+
+Tras aplicar los 3 algoritmos de aprendizaje supervisado sobre los datos, observamos las respectivas matrices de confusión que recojen las medidas que nos permiten contrastar el rendimiento de los modelos. Para facilitar la lectura e interpretación de las mismas nos fijaremos en la precisión (accuracy), Recall y F1-score de las 3 matrices de confusión.
+
+Para ello, en primer lugar recogeremos y mostraremos unicamente las metricas de rendimiento de estas matrices.
+
+```{r}
+# Extraer métricas de rendimiento
+metrics_log <- conf_matrix_log$byClass
+metrics_rf <- conf_matrix_rf$byClass
+metrics_knn <- conf_matrix_knn$byClass
+
+# Mostrar las métricas de rendimiento
+print("Métricas de Regresión Logística")
+print(metrics_log)
+print("Métricas de Random Forest")
+print(metrics_rf)
+print("Métricas de KNN")
+print(metrics_knn)
+```
+
+Posteriormente, nos centraremos en la precisión, recall y F1-score para interprretar y evluar el rendimiento de los 3 modelos de una forma intercomparativa.
+
+```{r}
+# Comparar precisión, recall y F1-score
+#Regresión logística
+accuracy_log <- conf_matrix_log$overall['Accuracy']
+recall_log <- metrics_log['Recall']
+f1_log <- metrics_log['F1']
+
+# Random Forest
+accuracy_rf <- conf_matrix_rf$overall['Accuracy']
+recall_rf <- metrics_rf['Recall']
+f1_rf <- metrics_rf['F1']
+
+# K-Nearest Neighbors
+accuracy_knn <- conf_matrix_knn$overall['Accuracy']
+recall_knn <- metrics_knn['Recall']
+f1_knn <- metrics_knn['F1']
+
+# Mostrar comparación
+cat("Regresión Logística:\n - Accuracy:", accuracy_log, "\n - Recall:", recall_log, "\n - F1:", f1_log, "\n\n")
+
+cat("Random Forest:\n - Accuracy:", accuracy_rf, "\n - Recall:", recall_rf, "\n - F1:", f1_rf, "\n\n")
+
+cat("KNN:\n - Accuracy:", accuracy_knn, "\n - Recall:", recall_knn, "\n - F1:", f1_knn, "\n\n")
+
+```
+
+En este caso, observamos como el modelo de regresión logística presenta una precisión, recall y F1-score superiores a los otros dos modelos, por lo que se tratará del modelo mas adecuado entre los 3 a utilizar. Con la medida de la precisón observamos una idea global de como esta funcionando el modelo, ya que se trata de la proporcion de predicciones correctas de las realizadas por el mismo. Ademas al tener un recall o sensibilidad mayor tambien nos esta indicando que la proporción de verdaderos positivos es mas alta. Ademas, el F1-score nos da una idea global, equilibrando la precisión y la sensibilidad, que en casos muy dudosos nos permite comparar con mayor facilidad entre modelos. En este caso tambien se trata del mayor valor por lo que las 3 medidas nos estan indicando que el modelo de regresión logística es el que mejor se adecua a los datos empleados.
